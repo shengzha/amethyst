@@ -146,22 +146,51 @@ makeWindows <- function(
           if (metric != "percent") {
             meth_cell <- obj@metadata[barcode, paste0("m", tolower(type), "_pct")]/100 # pull global methylation level from metadata
           }
+          # If the metric is not "percent", extract the global methylation level for a cell from the metadata (e.g., mCG_pct if type = "CG").
 
           h5 <- data.table::data.table(rhdf5::h5read(path, name = paste0(type, "/", barcode, "/1"),
                                                      start = sites$start[sites$cell_id == barcode],
                                                      count = sites$count[sites$cell_id == barcode])) # read in 1 chr at a time
+          # Reads single-cell methylation data (e.g., from "CpG/barcode/1") using rhdf5::h5read.
+          # Reads only one chromosome at a time, specified by start and count for the given barcode.
+          # Converts it into a data.table.
 
           meth_window <- h5[bed_tmp, on = .(chr = chr, pos >= start, pos <= end), nomatch = 0L, .(chr, start, end, pos = x.pos, c, t)]
+          # This is a non-equi join using data.table, which is more powerful than a standard merge().
+          # right join (i[j]) 
+          # Defines the join keys
+          # Keeps only matching rows.
+          # Selects output columns
+          # Joins methylation data (h5) with genomic windows (bed_tmp).
+          # Range join: Keeps only rows where pos is between start and end of the genomic window.
+          # Keeps columns: chr, start, end, position (x.pos), and counts of methylated (c) and unmethylated (t) cytosines.
+
           meth_window <- meth_window[, .(value = round((sum(c != 0)/ (sum(c != 0) + sum(t != 0))), 4),
                                          n = sum(c + t, na.rm = TRUE)), by = .(chr, start, end)]
+          # meth_window[, .( ... ), by = .(chr, start, end)] # This says: “For each group of rows with the same chr, start, and end, compute ..."
+          # This line calculates:
+          # value: The methylation rate (fraction of methylated CpGs) in each window, = number of methylated sites/total number of sites (methylated + unmethylated)
+          # Rounds to 4 decimals.
+          # n: The total coverage (methylated + unmethylated reads) in the window.
+          # Grouped by genomic window (chr, start, end).
           meth_window <- meth_window[n >= nmin, ][, n := NULL]
+          # Filters out low-coverage windows (n < nmin), then drops the n column.
+
 
           if (metric == "percent") { summary <- meth_window[, value := (value * 100)] }
           if (metric == "score") { summary <- meth_window[, value := round((ifelse((value - meth_cell) > 0,
                                                                                    (value - meth_cell)/(1 - meth_cell),
                                                                                    (value - meth_cell)/meth_cell)), 3)] }
           if (metric == "ratio") { summary <- meth_window[, value := round(value / meth_cell, 3)] }
+          # Depending on the metric, modify the value:
+          # "percent": Convert to a percentage.
+          # "score": Calculate a score reflecting deviation from cell’s global methylation level:
+          # If value > meth_cell: scale by remaining potential (1 - meth_cell)
+          # If value < meth_cell: scale by current methylation
+          # "ratio": Simple ratio of regional to global methylation.
+
           data.table::setnames(summary, "value", cell_name)
+          # Rename the value column to the cell's name (cell_name), for joining with other cells later.
         }, error = function(e) {
           cat("Error processing data for barcode", barcode, ":", conditionMessage(e), "\n")
           return(NULL)  # Return NULL or any other value indicating failure
@@ -170,8 +199,34 @@ makeWindows <- function(
 
       # Reduce merge the data.tables per cell in chunks (way faster for large datasets)
       windows <- split(windows, ceiling(seq_along(windows)/1000))
+      # Splits the windows list into chunks of 1000 elements.
+      # Each element of the resulting list is itself a list of up to 1000 methylation tables.
+      # Why? To avoid memory issues and speed up parallel merging.
       windows_merged <- Reduce(function(x, y) merge(x, y, by = c("chr", "start", "end"), all = TRUE, sort = FALSE),
                                furrr::future_map(windows, ~ Reduce(function(x, y) merge(x, y, by = c("chr", "start", "end"), all = TRUE, sort = FALSE), .x), .progress = TRUE))
+      # a. furrr::future_map(...)
+      # Applies a function in parallel to each chunk of windows.
+      # For each chunk (up to 1000 elements), it:
+      # Reduce(function(x, y) merge(x, y, by = ..., all = TRUE), .x)
+      # i.e., merges all tables in that chunk by genomic window.
+      # So after this, you get a list of ~N merged blocks (each combining 1000 or fewer tables).
+      # b. Outer Reduce(...)
+      # Then, it merges the merged blocks together:
+      # One last Reduce() to combine the block-level merged results into the final full matrix.
+      # 📌 merge(..., all = TRUE, sort = FALSE)
+      # all = TRUE: full outer join (preserves all windows across all cells)
+      # sort = FALSE: keeps original row order (faster and more memory-efficient)
+      # 🧾 Output: windows_merged
+      # A single data.frame or data.table with:
+      # Columns: chr, start, end, and one column per cell
+      # Rows: all unique genomic windows across all cells
+      # ✅ Summary
+      # This code:
+      # Splits a large list of methylation data tables into chunks of 1000.
+      # Merges each chunk in parallel (using furrr::future_map()).
+      # Combines the merged chunks into a final unified matrix by genomic window.
+      # 🚀 It’s an efficient way to merge thousands of large tables with overlapping genomic windows across cells.
+
       if (save) {
         saveRDS(windows_merged, paste0("tmp_", type, "_", metric, "_", chr, "_", file_name, "_nmin", nmin, ".RData"))
       }
@@ -266,7 +321,25 @@ makeWindows <- function(
 
     # filter alternative loci and sex chromosomes
     windows_merged <- windows_merged |> tibble::column_to_rownames(var = "window")
+    # using the pipe operator (|>) to pass the data frame to the function, 
+    # converts the column named "window" into row names of the data frame. 
+    # After this step, the "window" column is removed from the columns and becomes the row names (used to identify rows).
     windows_merged <- windows_merged[!sapply(rownames(windows_merged), function(name) length(strsplit(name, "_")[[1]]) > 3 || grepl("chrEBV|chrM|KI", name)), ]
+    # rownames(windows_merged) returns a character vector of all row names (now derived from the "window" column).
+    # sapply(..., function(name) ...) applies the function to each row name.
+    # This returns TRUE if: 
+    # The row name, when split by _, has more than 3 parts.
+    # e.g., "chr1_1000_2000_extra" → split: ["chr1", "1000", "2000", "extra"] → length 4 → gets removed.
+    # The row name contains one of these patterns: "chrEBV", "chrM", or "KI" (case-sensitive).
+    # This is checked using grepl(...).
+    # The ! negates the logical vector so that only rows NOT matching these conditions are kept.
+
+    # chrEBV, https://www.biostars.org/p/447375/
+    # The GRCh38 analysis sets also include a contig to siphon off reads corresponding to the Epstein-Barr virus sequence as well as decoy contigs. The EBV contig can help correct for artifacts stemming from immortalization of human blood lymphocytes with EBV transformation, as well as capture endogenous EBV sequence as EBV naturally infects B cells in ~90% of the world population. Heng Li provides the decoy contigs.
+    
+    # KI, Alternate loci (or alt loci) in GRCh38 offer sequences for selected regions with significant variability, like those related to the Killer-cell Immunoglobulin-like Receptor (KIR) genes.
+    # https://genome.ucsc.edu/cgi-bin/hgGateway
+    # Alternate sequences - Several human chromosomal regions exhibit sufficient variability to prevent adequate representation by a single sequence. To address this, the GRCh38 assembly provides alternate sequence for selected variant regions through the inclusion of alternate loci scaffolds (or alt loci). Alt loci are separate accessioned sequences that are aligned to reference chromosomes. The GRCh38 initial assembly contained 261 alt loci, many of which are associated with the LRC/KIR area of chr19 and the MHC region on chr6. Subsequent GRC patch releases have added additional alt loci and fix patches.
 
   }
 

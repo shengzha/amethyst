@@ -210,17 +210,25 @@ calcSmoothedWindows <- function(
   if (!is.null(subset)) {
     subset_coords <- data.table::tstrsplit(subset, "_", fixed = TRUE)
     subset_coords <- data.table(subset_chr = subset_coords[[1]], subset_start = as.integer(subset_coords[[2]]), subset_end = as.integer(subset_coords[[3]]))
+    # splits strings by a delimiter ("_" here), converts into a structured data.table 
     data.table::setkey(subset_coords, subset_chr, subset_start, subset_end)
+    # Sets a composite key for the subset_coords table for efficient use in overlaps or joins.
 
     chromosome_sizes <- chromosome_sizes[chromosome_sizes$chromosome == subset_coords$subset_chr, ]
+    # Subsets the chromosome_sizes table to include only the chromosome specified in the subset.
   }
 
   # Apply the function to each chromosome and combine results
   genomechunks <- do.call(rbind, lapply(1:nrow(chromosome_sizes), function(i) {
     generate_windows(chromosome_sizes$chromosome[i], chromosome_sizes$size[i])
   }))
+  # Iterates over all chromosomes in the chromosome_sizes data frame.
+  # For each row:
+  # Extracts chromosome and size.
+  # Calls a function generate_windows(...), to split the chromosome into fixed-size bins (like 10kb windows).
 
   data.table::setDT(genomechunks)
+  # converts genomechunks (data.frame) in-place into a data.table 
   genomechunks <- genomechunks[, window := paste0(chr, "_", start, "_", end)]
   data.table::setkey(genomechunks, chr, start, end)
 
@@ -233,7 +241,14 @@ calcSmoothedWindows <- function(
       nomatch = 0L,  # drops non-overlapping rows
       type = "any"   # any overlap is sufficient
     )
+    # Performs fast interval overlap joins between two data.tables.
+    # Both x and y must be keyed on their respective interval columns.
+    # Options:
+    # nomatch = 0L: drop rows from x that don’t overlap any y region.
+    # type = "any": keep rows with any kind of overlap (partial or full).
     genomechunks <- filtered_chunks[, .(chr, start, end, window)]
+    # Keeps only the original columns from genomechunks.
+    # Discards any extra columns added during the overlap join (like those from subset_coords).
   }
 
   #define chr groups
@@ -268,6 +283,7 @@ calcSmoothedWindows <- function(
     sites <- obj@index[[index]][[chr]] # get chr index for h5 file
 
     chr_group_results <- furrr::future_map(.x = groups, .f = function(gr) {
+    # It applies a function (.f) to each element of a vector or list (.x) in parallel.
       members <- rownames(membership |> dplyr::filter(membership == gr))
 
       if (is.null(obj@h5paths$prefix)) {
@@ -334,9 +350,19 @@ calcSmoothedWindows <- function(
   count_matrix <- count_matrix[, smooth_start := lapply(.SD, function(x) data.table::frollapply(x, n = smooth, FUN = function(y) y[1], align = "center", fill = NA)), .SDcols = "start"]
   count_matrix <- count_matrix[, smooth_end := lapply(.SD, function(x) data.table::frollapply(x, n = smooth, FUN = function(y) y[smooth], align = "center", fill = NA)), .SDcols = "end"]
   count_matrix <- count_matrix[, names(rolling_sums) := rolling_sums]
+  # Assigns each column in the rolling_sums list to the count_matrix under its corresponding name.
+  # overwrites columns for smoothed data.
+
   count_matrix <- count_matrix[data.table::shift(chr, 1) == data.table::shift(chr, -2)]
+  # This ensures that the centered rolling window does not cross chromosome boundaries.
+  # It keeps rows where:
+  # The previous (shift(chr, 1)) and next (shift(chr, -2)) chromosome are equal — i.e., the entire window is on the same chromosome.
+  # This filters out edge windows at chromosome breaks, which would mix chromosomes otherwise.
+
   count_matrix <- count_matrix[, c("smooth_start", "smooth_end") := NULL]
+  # Cleans up temporary columns used to track smoothed window coordinates
   count_matrix <- count_matrix[rowSums(count_matrix[, .SD, .SDcols = -c("chr", "start", "end")]) != 0]
+  # Removes any row where all group count columns (i.e., excluding "chr", "start", and "end") are zero.
 
   # Calculate cluster track from count_matrix
   if (returnPctMatrix) {

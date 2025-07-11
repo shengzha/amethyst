@@ -195,13 +195,18 @@ loadSmoothedWindows <- function(
 
   # get number of clusters
   membership <- obj@metadata |> dplyr::select(groupBy)
+  # A one-column data frame containing the group assignments.
   colnames(membership) <- "membership"
+  # The column is renamed to "membership" for standardization and easy reference in subsequent steps.
   membership <- membership |> dplyr::filter(!is.na(membership))
 
   valid_groups <- membership |>
     dplyr::count(membership) |>
     dplyr::filter(n > nmin) |>
     dplyr::pull(membership)
+    # Counts how many times each group appears
+    # Keeps only those groups where the count (n) is greater than nmin
+    # Extracts the group names (not the counts)
 
   groups <- as.list(unique(membership$membership[membership$membership %in% valid_groups]))
   group_results <- list()
@@ -244,10 +249,17 @@ loadSmoothedWindows <- function(
 
       # Filter out NULLs
       chunk_results <- purrr::compact(chunk_results)
+      # removes any NULL elements from the list.
       chunk_results <- data.table::rbindlist(chunk_results)
+      # binds (stacks) all data.tables in the list into one data.table.
+      # Much faster than do.call(rbind, ...) or dplyr::bind_rows() for large datasets.
 
       if (nrow(chunk_results)) {
+      # This checks whether chunk_results has any data.  
         chunk_results <- chunk_results[, .(c = sum(c, na.rm = TRUE), t = sum(t, na.rm = TRUE)), by = .(chr, start, end)]
+        # This is data.table syntax.
+        # It groups the data by chr, start, and end columns.
+        # Then, it sums columns c and t within each group, ignoring NAs.
         group_result_chunks[[i]] <- chunk_results
       }
     }
@@ -264,9 +276,20 @@ loadSmoothedWindows <- function(
   }
 
   count_matrix <- Reduce(function(x, y) merge(x, y, by = c("chr", "start", "end"), all = TRUE, sort = FALSE), group_results)
+  # group_results is a list of data frames/data.tables.
+  # Each contains at least the columns: "chr", "start", and "end".
+  # merge(x, y, by = c("chr", "start", "end"), all = TRUE, sort = FALSE) merges two data frames:
+  # By genomic coordinates: chr, start, end.
+  # all = TRUE: Full outer join — keeps all rows from both x and y.
+  # sort = FALSE: Keeps the original row order (prevents sorting by key).
+  # Reduce(...) applies that merge function to the entire list from left to right.
   data.table::setorder(count_matrix, chr, start)
 
   count_matrix <- count_matrix[, `:=`(start = (start + smoothTrim), end = (end - smoothTrim))]
+  # This is data.table syntax — efficient and memory-friendly.
+  # := is used to modify columns by reference (i.e., without copying the whole object).
+  # start = (start + smoothTrim): shifts the start coordinate forward by smoothTrim.
+  # end = (end - smoothTrim): shifts the end coordinate backward by smoothTrim.
 
   if (threads > 1) {
     future::plan(future::sequential)

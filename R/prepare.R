@@ -357,7 +357,30 @@ runCluster <- function(obj,
     }
     if (!is.null(obj@metadata)) {
       obj@metadata <- merge(obj@metadata, clusters, by = 0) |> tibble::column_to_rownames(var = "Row.names")
+      # Step-by-step:
+      # 1. merge(obj@metadata, clusters, by = 0):
+      # This merges two data frames: obj@metadata and clusters.
+      # by = 0 means it merges by row names, which temporarily get stored in a column called "Row.names" during the merge.
+      # This is typically done when clusters is a data frame with row names corresponding to the cells in obj@metadata.
+      # 2. |> tibble::column_to_rownames(var = "Row.names"):
+      # After merging, the "Row.names" column is restored as row names using tibble::column_to_rownames().
+      # This pipe (|>) sends the result of merge() into this function.
+      # Overall effect:
+      # Merges clusters (probably cluster assignments per cell) into the metadata of the object (obj) using row names as keys.
+      # Ensures the row names are preserved as they were before merging.
       obj@metadata <- obj@metadata[, !grepl("cell_id", colnames(obj@metadata))]
+      # Step-by-step:
+      # 1. colnames(obj@metadata):
+      # Gets the column names of the metadata.
+      # 2. grepl("cell_id", ...):
+      # Checks which column names contain the substring "cell_id".
+      # Returns a logical vector (TRUE for columns that match).
+      # 3. !grepl(...):
+      # Negates the result — this is TRUE for columns that do not contain "cell_id".
+      # 4. obj@metadata[, ...]:
+      # Subsets the metadata to keep only the columns that do not contain "cell_id".
+      # Overall effect:
+      # Removes any column(s) in the metadata whose name contains "cell_id".
     }
   } else if (!is.null(obj@metadata[[colname]])) {
     obj@metadata <- merge(obj@metadata |> dplyr::select(-!!sym(colname)),
